@@ -22,16 +22,17 @@ SITES = [
 
 # --- 增强版逻辑：物理检查重复 ---
 def is_duplicate(ukey):
-    if not os.path.exists(DB_FILE): return False
+    if not os.path.exists(DB_FILE): 
+        return False
     with open(DB_FILE, 'r', encoding='utf-8') as f:
-        for line in f:
-            if ukey.strip() == line.strip(): return True
-    return False
+        seen_ids = {line.strip() for line in f if line.strip()}
+        return ukey.strip() in seen_ids
 
 def save_to_db(ukey):
+    ukey = ukey.strip()
     if not is_duplicate(ukey):
         with open(DB_FILE, 'a', encoding='utf-8') as f:
-            f.write(f"{ukey.strip()}\n")
+            f.write(ukey + "\n")
         return True
     return False
 
