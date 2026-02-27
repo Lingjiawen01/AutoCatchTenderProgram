@@ -8,7 +8,7 @@ from playwright.sync_api import sync_playwright
 
 # --- 配置区 ---
 TELEGRAM_TOKEN = "8249171192:AAGEjyCYuF2_EqrIa6cLRIWkIuSuB0co7VY"
-USER_IDS = ["5101247595","7763852448"] 
+USER_IDS = ["5101247595","8643954314","7763852448"] 
 DB_FILE = "seen_projects.txt"
 
 SITES = [
@@ -25,14 +25,26 @@ def is_duplicate(ukey):
     if not os.path.exists(DB_FILE): 
         return False
     with open(DB_FILE, 'r', encoding='utf-8') as f:
+        # 使用 strip() 彻底清除每一行两端的不可见字符（空格、换行等）
+        # 这样即便文件里有粘连，逻辑比对也会更健壮
         seen_ids = {line.strip() for line in f if line.strip()}
         return ukey.strip() in seen_ids
 
 def save_to_db(ukey):
     ukey = ukey.strip()
     if not is_duplicate(ukey):
-        with open(DB_FILE, 'a', encoding='utf-8') as f:
-            f.write(ukey + "\n")
+        with open(DB_FILE, 'a+', encoding='utf-8') as f:
+            # a+ 模式让我们可以先检查文件末尾状态
+            f.seek(0, 2)  # 移到文件末尾
+            if f.tell() > 0:
+                f.seek(f.tell() - 1)
+                last_char = f.read(1)
+                # 如果最后一个字符不是换行符，先补一个换行符，防止粘连
+                if last_char != '\n':
+                    f.write('\n')
+            
+            # 写入新的 ID 并强制换行
+            f.write(f"{ukey}\n")
         return True
     return False
 
