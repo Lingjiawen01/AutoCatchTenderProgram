@@ -8,7 +8,7 @@ from playwright.sync_api import sync_playwright
 
 # --- 配置区 ---
 TELEGRAM_TOKEN = "8249171192:AAGEjyCYuF2_EqrIa6cLRIWkIuSuB0co7VY"
-USER_IDS = ["5101247595","8643954314","7763852448"] 
+USER_IDS = ["5101247595","8643954314","7763852448","8781815266"] 
 DB_FILE = "seen_projects.txt"
 
 SITES = [
@@ -16,7 +16,7 @@ SITES = [
     {"name": "RECODA Sarawak", "url": "https://recoda.gov.my/tender/", "id_tag": "RCDA/", "type": "text"},
     {"name": "SEB (Sarawak Energy)", "url": "https://os.sarawakenergy.com.my/etender/", "id_tag": "Doc", "type": "seb"}, 
     {"name": "JBALB Sarawak", "url": "https://jbalb.sarawak.gov.my/web/subpage/webpage_view/89", "id_tag": "T/JBALB/", "type": "text"},
-    {"name": "Sacofa", "url": "https://www.sacofa.com.my/index.php/archived-tender-notice", "id_tag": "Reference Number", "type": "text"},
+    {"name": "Sacofa", "url": "https://www.sacofa.com.my/procurement", "id_tag": "Ref No:", "type": "sacofa"},
     {"name": "KKDW (Rural Link)", "url": "https://www.rurallink.gov.my/tender-sebut-harga/iklan-tawaran-tender/", "id_tag": "KKDW", "type": "table"}
 ]
 
@@ -25,8 +25,6 @@ def is_duplicate(ukey):
     if not os.path.exists(DB_FILE): 
         return False
     with open(DB_FILE, 'r', encoding='utf-8') as f:
-        # 使用 strip() 彻底清除每一行两端的不可见字符（空格、换行等）
-        # 这样即便文件里有粘连，逻辑比对也会更健壮
         seen_ids = {line.strip() for line in f if line.strip()}
         return ukey.strip() in seen_ids
 
@@ -101,8 +99,27 @@ class SiteParser:
     def jbalb_sarawak(block, lines, idx):
         id_match = re.search(r'(T/JBALB/\d+/[A-Z.]+.\d+)', block)
         t_id = id_match.group() if id_match else "Unknown"
-        title = lines[idx+1].strip() if len(lines) > idx+1 else "N/A"
-        raw_date = smart_date_parser(block)
+        
+        title = "N/A"
+        raw_date = None
+        
+        search_limit = min(len(lines), idx + 30)
+        for j in range(idx, search_limit):
+            current_line = lines[j].strip()
+            
+            if current_line.upper() == "TITLE" and j + 1 < len(lines):
+                for k in range(j + 1, min(len(lines), j + 4)):
+                    if len(lines[k].strip()) > 10 and lines[k].strip().upper() != "DETAILS/TENDER DOCUMENT":
+                        title = lines[k].strip()
+                        break
+
+            if "CLOSING DATE" in current_line.upper() and j + 1 < len(lines):
+                date_block = " ".join(lines[j : min(len(lines), j+4)])
+                raw_date = smart_date_parser(date_block)
+
+        if not raw_date:
+            raw_date = smart_date_parser(block)
+            
         return t_id, title, "Water Supply", "JBALB Sarawak", raw_date
 
     @staticmethod
@@ -156,6 +173,41 @@ def check_updates():
                             if site['id_tag'] in content:
                                 combined_text += content + "\n"
                         except: continue
+                elif site['type'] == "sacofa":  #新增 Sacofa 
+                    page.wait_for_timeout(3000)
+                    combined_text = page.inner_text("body")
+                    lines = [l.strip() for l in combined_text.split("\n") if l.strip()]
+                    
+                    for i in range(len(lines)):
+                        if "REF NO:" in lines[i].upper() and i + 1 < len(lines):
+                            t_id = lines[i+1].strip()
+                            
+                            # 向上提取 Project Title
+                            title = "N/A"
+                            for j in range(max(0, i-5), i):
+                                if len(lines[j]) > 20 and not any(k in lines[j].upper() for k in ["ACTIVE", "TENDER NOTICES"]):
+                                    title = lines[j]
+                                    break
+                            
+                            # 向下提取 Closing Date 并转格式
+                            raw_date = None
+                            for j in range(i, min(len(lines), i + 8)):
+                                if "CLOSING DATE:" in lines[j].upper() and j + 1 < len(lines):
+                                    raw_date_str = lines[j+1].strip()
+                                    try:
+                                        dt = datetime.strptime(raw_date_str, "%B %d %Y")
+                                        raw_date = dt.strftime("%d/%m/%Y")
+                                    except:
+                                        raw_date = raw_date_str
+                                    break
+                            
+                            is_2026, final_date = validate_and_filter_2026(raw_date)
+                            ukey = f"Sacofa_{t_id}".replace(" ", "").replace("/", "_")
+                            
+                            if is_2026 and not is_duplicate(ukey) and t_id != "Unknown":
+                                send_alert("Sacofa", t_id, title, "Sarawak", "Sacofa", final_date, site['url'])
+                                save_to_db(ukey)
+                    continue
                 elif site['type'] == "table":
                     page.wait_for_timeout(3000)
                     rows = page.query_selector_all("table tr")
