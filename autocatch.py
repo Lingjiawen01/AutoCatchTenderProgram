@@ -209,7 +209,7 @@ def check_updates():
                                 save_to_db(ukey)
                     continue
                 elif site['type'] == "table":
-                    page.wait_for_timeout(3000)
+                    page.wait_for_timeout(4000)
                     rows = page.query_selector_all("table tr")
                     for row in rows:
                         cells = row.query_selector_all("td")
@@ -223,7 +223,7 @@ def check_updates():
                             save_to_db(ukey)
                     continue
                 else:
-                    page.wait_for_timeout(3000)
+                    page.wait_for_timeout(4000)
                     combined_text = page.inner_text("body")
 
                 lines = [l.strip() for l in combined_text.split("\n") if l.strip()]
