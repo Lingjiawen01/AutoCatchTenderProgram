@@ -154,7 +154,6 @@ def check_updates():
             viewport={'width': 1366, 'height': 768},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
         )
-        
         context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
         for site in SITES:
@@ -162,18 +161,73 @@ def check_updates():
             print(f"🔍 Scanning: {site['name']}...")
             try:
                 page.goto(site['url'], wait_until="networkidle", timeout=60000)
-                
                 if site['type'] == "seb":
                     time.sleep(5) 
-                    combined_text = ""
                     for frame in page.frames:
-                        try:
-                            frame.wait_for_load_state("load")
-                            content = frame.inner_text("body")
-                            if site['id_tag'] in content:
-                                combined_text += content + "\n"
-                        except: continue
-                elif site['type'] == "sacofa":  #新增 Sacofa 
+                        rows = frame.query_selector_all("tr")
+                        for row in rows:
+                            row_text = row.inner_text().strip()
+                            if "Doc" not in row_text:
+                                continue
+                            
+                            doc_m = re.search(r'Doc\d{8,12}', row_text)
+                            if not doc_m:
+                                continue
+                            t_id = doc_m.group()
+                            
+                            cells = row.query_selector_all("td")
+                            if len(cells) >= 5:
+                                raw_title = cells[1].inner_text().strip()
+                                # 彻底在 Eligible Tenderers 处切断，只取前面的项目标题
+                                clean_title = re.split(r'Eligible\s+Tenderers', raw_title, flags=re.I)[0].strip()
+                                clean_title = re.sub(r'\s+', ' ', clean_title)[:150]
+                                if not clean_title or len(clean_title) < 5:
+                                    clean_title = "Check Portal"
+                                
+                                dates = re.findall(r'(\d{2}/\d{2}/2026)', row_text)
+                                raw_date = dates[1] if len(dates) >= 2 else (dates[0] if dates else None)
+                                
+                                is_2026, final_date = validate_and_filter_2026(raw_date)
+                                ukey = f"SEB_{t_id}"
+                                
+                                if is_2026 and not is_duplicate(ukey):
+                                    send_alert("SEB (Sarawak Energy)", t_id, clean_title, "SEB Area", "Sarawak Energy", final_date, site['url'])
+                                    save_to_db(ukey)
+
+                elif site['type'] == "jbalb":
+                    page.wait_for_timeout(4000)
+                    tables = page.query_selector_all("table")
+                    for tbl in tables:
+                        tbl_text = tbl.inner_text()
+                        if "T/JBALB/" not in tbl_text and "Tender Number" not in tbl_text:
+                            continue
+                        
+                        t_id, title, raw_date = "Unknown", "Check Portal", None
+                        rows = tbl.query_selector_all("tr")
+                        for r in rows:
+                            tds = r.query_selector_all("td, th")
+                            if len(tds) < 2: continue
+                            label = tds[0].inner_text().strip().upper()
+                            val = tds[1].inner_text().strip()
+                            
+                            if "TENDER NUMBER" in label:
+                                id_m = re.search(r'T/JBALB/[A-Za-z0-9/.]+', val)
+                                t_id = id_m.group() if id_m else val
+                            elif "TITLE" in label:
+                                title = re.sub(r'\s+', ' ', val).strip()  # 取右侧单元格真实标题
+                            elif "CLOSING DATE" in label:
+                                raw_date = smart_date_parser(val)
+                                
+                        if t_id != "Unknown" and title != "Title":
+                            if not raw_date: raw_date = smart_date_parser(tbl_text)
+                            is_2026, final_date = validate_and_filter_2026(raw_date)
+                            ukey = f"JBALB_{t_id}".replace(" ", "").replace("/", "_")
+                            
+                            if is_2026 and not is_duplicate(ukey):
+                                send_alert("JBALB Sarawak", t_id, title, "Water Supply", "JBALB Sarawak", final_date, site['url'])
+                                save_to_db(ukey)
+
+                elif site['type'] == "sacofa":
                     page.wait_for_timeout(3000)
                     combined_text = page.inner_text("body")
                     lines = [l.strip() for l in combined_text.split("\n") if l.strip()]
@@ -182,14 +236,12 @@ def check_updates():
                         if "REF NO:" in lines[i].upper() and i + 1 < len(lines):
                             t_id = lines[i+1].strip()
                             
-                            # 向上提取 Project Title
                             title = "N/A"
                             for j in range(max(0, i-5), i):
                                 if len(lines[j]) > 20 and not any(k in lines[j].upper() for k in ["ACTIVE", "TENDER NOTICES"]):
                                     title = lines[j]
                                     break
                             
-                            # 向下提取 Closing Date 并转格式
                             raw_date = None
                             for j in range(i, min(len(lines), i + 8)):
                                 if "CLOSING DATE:" in lines[j].upper() and j + 1 < len(lines):
@@ -207,7 +259,7 @@ def check_updates():
                             if is_2026 and not is_duplicate(ukey) and t_id != "Unknown":
                                 send_alert("Sacofa", t_id, title, "Sarawak", "Sacofa", final_date, site['url'])
                                 save_to_db(ukey)
-                    continue
+
                 elif site['type'] == "table":
                     page.wait_for_timeout(4000)
                     rows = page.query_selector_all("table tr")
@@ -215,41 +267,58 @@ def check_updates():
                         cells = row.query_selector_all("td")
                         if len(cells) < 6: continue
                         t_id = cells[2].inner_text().strip()
-                        raw_date = cells[5].inner_text()
+                        raw_date = cells[5].inner_text().strip()
                         is_2026, final_date = validate_and_filter_2026(raw_date)
-                        ukey = f"KKDW_{t_id}"
-                        if is_2026 and not is_duplicate(ukey):
+                        ukey = f"KKDW_{t_id}".replace(" ", "").replace("/", "_")
+                        if is_2026 and not is_duplicate(ukey) and t_id != "":
                             send_alert(site['name'], t_id, cells[1].inner_text().strip(), cells[0].inner_text().strip(), "KKDW", final_date, site['url'])
                             save_to_db(ukey)
-                    continue
+                            
                 else:
                     page.wait_for_timeout(4000)
                     combined_text = page.inner_text("body")
+                    lines = [l.strip() for l in combined_text.split("\n") if l.strip()]
+                    
+                    if site['type'] == "jkr":
+                        for i in range(len(lines)):
+                            if "T/" in lines[i] and re.search(r'T/\d+/\d+/\d+', lines[i]):
+                                id_match = re.search(r'(T/\d+/\d+/\d+)', lines[i])
+                                t_id = id_match.group() if id_match else "Unknown"
+                                block = " ".join(lines[i : min(len(lines), i+20)])
+                                title = get_long_title(lines, i)
+                                closing_info = re.search(r'Closing Date\s*(.*)', block, re.I)
+                                raw_date = smart_date_parser(closing_info.group(1) if closing_info else block)
+                                loc = "Check Portal"
+                                for k in range(i, min(len(lines), i+10)):
+                                    if "PROJECT LOCATION" in lines[k].upper() and k+1 < len(lines):
+                                        loc = lines[k+1].strip(); break
+                                
+                                is_2026, final_date = validate_and_filter_2026(raw_date)
+                                ukey = f"JKR_{t_id}".replace(" ", "").replace("/", "_")
+                                if is_2026 and not is_duplicate(ukey) and t_id != "Unknown":
+                                    send_alert("JKR Sarawak", t_id, title, loc, "JKR Sarawak", final_date, site['url'])
+                                    save_to_db(ukey)
 
-                lines = [l.strip() for l in combined_text.split("\n") if l.strip()]
-                for i in range(len(lines)):
-                    if site['id_tag'] in lines[i]:
-                        block = " ".join(lines[i : min(len(lines), i+20)])
-                        if "JBALB" in site['name']: res = SiteParser.jbalb_sarawak(block, lines, i)
-                        elif "JKR" in site['name']: res = SiteParser.jkr_sarawak(block, lines, i)
-                        elif "SEB" in site['name']: res = SiteParser.seb_energy(block, lines, i)
-                        elif "RECODA" in site['name']:
-                            id_m = re.search(r'(RCDA/T/[A-Z0-9/]+)', block)
-                            t_id = id_m.group() if id_m else "Unknown"
-                            title = get_long_title(lines, i)
-                            raw_date = smart_date_parser(block)
-                            res = (t_id, title, "Sarawak", "RECODA", raw_date)
-                        else: continue
-                        
-                        t_id, title, loc, board, raw_date = res
-                        is_2026, final_date = validate_and_filter_2026(raw_date)
-                        ukey = f"{site['name'].split()[0]}_{t_id}".replace(" ", "")
-                        
-                        if is_2026 and not is_duplicate(ukey) and t_id != "Unknown":
-                            send_alert(site['name'], t_id, title, loc, board, final_date, site['url'])
-                            save_to_db(ukey)
-            except Exception as e: print(f"⚠️ {site['name']} Error: {e}")
-            finally: page.close()
+                    elif site['type'] == "recoda":
+                        for i in range(len(lines)):
+                            if "RCDA/" in lines[i]:
+                                id_m = re.search(r'(RCDA/T/[A-Za-z0-9/]+)', lines[i])
+                                t_id = id_m.group() if id_m else "Unknown"
+                                block = " ".join(lines[i : min(len(lines), i+20)])
+                                title = get_long_title(lines, i)
+                                raw_date = smart_date_parser(block)
+                                
+                                is_2026, final_date = validate_and_filter_2026(raw_date)
+                                ukey = f"RECODA_{t_id}".replace(" ", "").replace("/", "_")
+                                if is_2026 and not is_duplicate(ukey) and t_id != "Unknown":
+                                    send_alert("RECODA Sarawak", t_id, title, "Sarawak", "RECODA", final_date, site['url'])
+                                    save_to_db(ukey)
+
+            except Exception as e: 
+                print(f"⚠️ {site['name']} Error: {e}")
+            finally: 
+                page.close()
+                
         browser.close()
 
 if __name__ == "__main__":
